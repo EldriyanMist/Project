@@ -1,0 +1,3 @@
+ALTER TABLE movies;
+ADD COLUMN rating float8 NOT NULL DEFAULT 0;
+ADD COLUMN votes integer NOT NULL DEFAULT 0;
