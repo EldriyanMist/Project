@@ -1,27 +1,22 @@
 package main
 
 import (
-	"context"      // New import
-	"database/sql" // New import
+	"context"
 	"flag"
 	"fmt"
-	"greenlight/internal/data"
-	"log"
+	"github.com/jackc/pgx/v5/pgxpool"
+	_ "github.com/lib/pq"
+	"greenlight.aitu.kz/internal/data"
+	"greenlight.aitu.kz/internal/jsonlog"
+	"greenlight.aitu.kz/internal/mailer"
 	"net/http"
 	"os"
+	"sync"
 	"time"
-	// Import the pq driver so that it can register itself with the database/sql
-	// package. Note that we alias this import to the blank identifier, to stop the Go
-	// compiler complaining that the package isn't being used.
-	_ "github.com/lib/pq"
 )
 
 const version = "1.0.0"
 
-// Add a db struct field to hold the configuration settings for our database connection
-// pool. For now this only holds the DSN, which we will read in from a command-line flag.
-// Add maxOpenConns, maxIdleConns and maxIdleTime fields to hold the configuration
-// settings for the connection pool.
 type config struct {
 	port int
 	env  string
@@ -31,38 +26,75 @@ type config struct {
 		maxIdleConns int
 		maxIdleTime  string
 	}
+	limiter struct {
+		rps     float64
+		burst   int
+		enabled bool
+	}
+	smtp struct {
+		host     string
+		port     int
+		username string
+		password string
+		sender   string
+	}
 }
 
-// Add a models field to hold our new Models struct.
 type application struct {
 	config config
-	logger *log.Logger
+	logger *jsonlog.Logger
 	models data.Models
+	mailer mailer.Mailer
+	wg     sync.WaitGroup
 }
 
 func main() {
+
 	var cfg config
 	flag.IntVar(&cfg.port, "port", 4000, "API server port")
 	flag.StringVar(&cfg.env, "env", "development", "Environment (development|staging|production)")
-	flag.StringVar(&cfg.db.dsn, "db-dsn", "postgres://greenlight:aitu@localhost/greenlight?sslmode=disable", "PostgreSQL DSN")
+
+	flag.StringVar(&cfg.db.dsn, "db-dsn", "postgres://greenlight:password@localhost/greenlight?sslmode=disable", "PostgreSQL DSN")
+
 	flag.IntVar(&cfg.db.maxOpenConns, "db-max-open-conns", 25, "PostgreSQL max open connections")
 	flag.IntVar(&cfg.db.maxIdleConns, "db-max-idle-conns", 25, "PostgreSQL max idle connections")
 	flag.StringVar(&cfg.db.maxIdleTime, "db-max-idle-time", "15m", "PostgreSQL max connection idle time")
+
+	flag.Float64Var(&cfg.limiter.rps, "limiter-rps", 2, "Rate limiter maximum requests per second")
+	flag.IntVar(&cfg.limiter.burst, "limiter-burst", 4, "Rate limiter maximum burst")
+	flag.BoolVar(&cfg.limiter.enabled, "limiter-enabled", true, "Enable rate limiter")
+
+	flag.StringVar(&cfg.smtp.host, "smtp-host", "smtp-mail.outlook.com", "SMTP host")
+	flag.IntVar(&cfg.smtp.port, "smtp-port", 587, "SMTP port")
+	flag.StringVar(&cfg.smtp.username, "smtp-username", "211495@astanait.edu.kz", "SMTP username")
+	flag.StringVar(&cfg.smtp.password, "smtp-password", "Aitu2021!", "SMTP password")
+	flag.StringVar(&cfg.smtp.sender, "smtp-sender", "Greenlight <211495@astanait.edu.kz>", "SMTP sender")
+
 	flag.Parse()
-	logger := log.New(os.Stdout, "", log.Ldate|log.Ltime)
+
+	logger := jsonlog.New(os.Stdout, jsonlog.LevelInfo)
+
 	db, err := openDB(cfg)
 	if err != nil {
-		logger.Fatal(err)
+		logger.PrintFatal(err, nil)
 	}
+
 	defer db.Close()
-	logger.Printf("database connection pool established")
-	// Use the data.NewModels() function to initialize a Models struct, passing in the
-	// connection pool as a parameter.
+
+	logger.PrintInfo("database connection pool established", nil)
+
 	app := &application{
 		config: cfg,
 		logger: logger,
 		models: data.NewModels(db),
+		mailer: mailer.New(cfg.smtp.host, cfg.smtp.port, cfg.smtp.username, cfg.smtp.password, cfg.smtp.sender),
 	}
+
+	err = app.serve()
+	if err != nil {
+		logger.PrintFatal(err, nil)
+	}
+
 	srv := &http.Server{
 		Addr:         fmt.Sprintf(":%d", cfg.port),
 		Handler:      app.routes(),
@@ -70,35 +102,30 @@ func main() {
 		ReadTimeout:  10 * time.Second,
 		WriteTimeout: 30 * time.Second,
 	}
-	logger.Printf("starting %s server on %s", cfg.env, srv.Addr)
+
+	logger.PrintInfo("starting server", map[string]string{
+		"addr": srv.Addr,
+		"env":  cfg.env,
+	})
 	err = srv.ListenAndServe()
-	logger.Fatal(err)
+
+	logger.PrintFatal(err, nil)
+
 }
 
-func openDB(cfg config) (*sql.DB, error) {
-	db, err := sql.Open("postgres", cfg.db.dsn)
+func openDB(cfg config) (*pgxpool.Pool, error) {
+
+	db, err := pgxpool.New(context.Background(), cfg.db.dsn)
 	if err != nil {
 		return nil, err
 	}
-	// Set the maximum number of open (in-use + idle) connections in the pool. Note that
-	// passing a value less than or equal to 0 will mean there is no limit.
-	db.SetMaxOpenConns(cfg.db.maxOpenConns)
-	// Set the maximum number of idle connections in the pool. Again, passing a value
-	// less than or equal to 0 will mean there is no limit.
-	db.SetMaxIdleConns(cfg.db.maxIdleConns)
-	// Use the time.ParseDuration() function to convert the idle timeout duration string
-	// to a time.Duration type.
-	duration, err := time.ParseDuration(cfg.db.maxIdleTime)
-	if err != nil {
-		return nil, err
-	}
-	// Set the maximum idle timeout.
-	db.SetConnMaxIdleTime(duration)
+
 	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
 	defer cancel()
-	err = db.PingContext(ctx)
+	err = db.Ping(ctx)
 	if err != nil {
 		return nil, err
 	}
+
 	return db, nil
 }
