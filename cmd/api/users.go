@@ -2,10 +2,11 @@ package main
 
 import (
 	"errors"
-	"greenlight.aitu.kz/internal/data"
-	"greenlight.aitu.kz/internal/validator"
 	"net/http"
 	"time"
+
+	"greenlight.bcc/internal/data"
+	"greenlight.bcc/internal/validator"
 )
 
 func (app *application) registerUserHandler(w http.ResponseWriter, r *http.Request) {
@@ -14,7 +15,7 @@ func (app *application) registerUserHandler(w http.ResponseWriter, r *http.Reque
 		Email    string `json:"email"`
 		Password string `json:"password"`
 	}
-	// Parse the request body into the anonymous struct.
+
 	err := app.readJSON(w, r, &input)
 	if err != nil {
 		app.badRequestResponse(w, r, err)
@@ -38,17 +39,22 @@ func (app *application) registerUserHandler(w http.ResponseWriter, r *http.Reque
 		app.failedValidationResponse(w, r, v.Errors)
 		return
 	}
-	// Insert the user data into the database.
+
 	err = app.models.Users.Insert(user)
 	if err != nil {
 		switch {
-
 		case errors.Is(err, data.ErrDuplicateEmail):
 			v.AddError("email", "a user with this email address already exists")
 			app.failedValidationResponse(w, r, v.Errors)
 		default:
 			app.serverErrorResponse(w, r, err)
 		}
+		return
+	}
+
+	err = app.models.Permissions.AddForUser(user.ID, "movies:read")
+	if err != nil {
+		app.serverErrorResponse(w, r, err)
 		return
 	}
 
@@ -59,7 +65,6 @@ func (app *application) registerUserHandler(w http.ResponseWriter, r *http.Reque
 	}
 
 	app.background(func() {
-
 		data := map[string]any{
 			"activationToken": token.Plaintext,
 			"userID":          user.ID,
@@ -70,16 +75,13 @@ func (app *application) registerUserHandler(w http.ResponseWriter, r *http.Reque
 			app.logger.PrintError(err, nil)
 		}
 	})
-
-	err = app.writeJSON(w, http.StatusAccepted, envelope{"user": user}, nil)
+	err = app.writeJSON(w, http.StatusCreated, envelope{"user": user}, nil)
 	if err != nil {
 		app.serverErrorResponse(w, r, err)
 	}
-
 }
 
 func (app *application) activateUserHandler(w http.ResponseWriter, r *http.Request) {
-
 	var input struct {
 		TokenPlaintext string `json:"token"`
 	}
@@ -109,6 +111,7 @@ func (app *application) activateUserHandler(w http.ResponseWriter, r *http.Reque
 	}
 
 	user.Activated = true
+
 	err = app.models.Users.Update(user)
 	if err != nil {
 		switch {

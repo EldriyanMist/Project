@@ -3,13 +3,12 @@ package main
 import (
 	"errors"
 	"fmt"
-	"greenlight.aitu.kz/internal/data"
-	"greenlight.aitu.kz/internal/validator"
+	"greenlight.bcc/internal/data"
+	"greenlight.bcc/internal/validator"
 	"net/http"
 )
 
 func (app *application) createMovieHandler(w http.ResponseWriter, r *http.Request) {
-
 	var input struct {
 		Title   string       `json:"title"`
 		Year    int32        `json:"year"`
@@ -23,7 +22,7 @@ func (app *application) createMovieHandler(w http.ResponseWriter, r *http.Reques
 		return
 	}
 
-	movie := &data.Movie{
+	movie := data.Movie{
 		Title:   input.Title,
 		Year:    input.Year,
 		Runtime: input.Runtime,
@@ -32,14 +31,12 @@ func (app *application) createMovieHandler(w http.ResponseWriter, r *http.Reques
 
 	v := validator.New()
 
-	if data.ValidateMovie(v, movie); !v.Valid() {
+	if data.ValidateMovie(v, &movie); !v.Valid() {
 		app.failedValidationResponse(w, r, v.Errors)
 		return
 	}
 
-	fmt.Fprintf(w, "%+v\n", input)
-
-	err = app.models.Movies.Insert(movie)
+	err = app.models.Movies.Insert(&movie)
 	if err != nil {
 		app.serverErrorResponse(w, r, err)
 		return
@@ -77,7 +74,6 @@ func (app *application) showMovieHandler(w http.ResponseWriter, r *http.Request)
 	if err != nil {
 		app.serverErrorResponse(w, r, err)
 	}
-
 }
 
 func (app *application) updateMovieHandler(w http.ResponseWriter, r *http.Request) {
@@ -97,7 +93,6 @@ func (app *application) updateMovieHandler(w http.ResponseWriter, r *http.Reques
 		}
 		return
 	}
-
 	var input struct {
 		Title   *string       `json:"title"`
 		Year    *int32        `json:"year"`
@@ -110,11 +105,9 @@ func (app *application) updateMovieHandler(w http.ResponseWriter, r *http.Reques
 		app.badRequestResponse(w, r, err)
 		return
 	}
-
 	if input.Title != nil {
 		movie.Title = *input.Title
 	}
-
 	if input.Year != nil {
 		movie.Year = *input.Year
 	}
@@ -126,7 +119,6 @@ func (app *application) updateMovieHandler(w http.ResponseWriter, r *http.Reques
 	}
 
 	v := validator.New()
-
 	if data.ValidateMovie(v, movie); !v.Valid() {
 		app.failedValidationResponse(w, r, v.Errors)
 		return
@@ -140,6 +132,7 @@ func (app *application) updateMovieHandler(w http.ResponseWriter, r *http.Reques
 		default:
 			app.serverErrorResponse(w, r, err)
 		}
+
 		return
 	}
 
@@ -150,7 +143,6 @@ func (app *application) updateMovieHandler(w http.ResponseWriter, r *http.Reques
 }
 
 func (app *application) deleteMovieHandler(w http.ResponseWriter, r *http.Request) {
-
 	id, err := app.readIDParam(r)
 	if err != nil {
 		app.notFoundResponse(w, r)
@@ -175,7 +167,6 @@ func (app *application) deleteMovieHandler(w http.ResponseWriter, r *http.Reques
 }
 
 func (app *application) listMoviesHandler(w http.ResponseWriter, r *http.Request) {
-
 	var input struct {
 		Title  string
 		Genres []string
@@ -183,16 +174,19 @@ func (app *application) listMoviesHandler(w http.ResponseWriter, r *http.Request
 	}
 
 	v := validator.New()
-
 	qs := r.URL.Query()
 
 	input.Title = app.readString(qs, "title", "")
 	input.Genres = app.readCSV(qs, "genres", []string{})
-
 	input.Filters.Page = app.readInt(qs, "page", 1, v)
 	input.Filters.PageSize = app.readInt(qs, "page_size", 20, v)
-
 	input.Filters.Sort = app.readString(qs, "sort", "id")
+
+	if !v.Valid() {
+		app.failedValidationResponse(w, r, v.Errors)
+		return
+	}
+
 	input.Filters.SortSafelist = []string{"id", "title", "year", "runtime", "-id", "-title", "-year", "-runtime"}
 
 	if data.ValidateFilters(v, input.Filters); !v.Valid() {
@@ -210,5 +204,4 @@ func (app *application) listMoviesHandler(w http.ResponseWriter, r *http.Request
 	if err != nil {
 		app.serverErrorResponse(w, r, err)
 	}
-
 }
